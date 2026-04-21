@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ChevronDown, Save, X } from "lucide-react";
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { PricingFieldSelector } from "./pricingFieldSelector";
 
@@ -464,17 +465,36 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const [createOverride, { isLoading: isCreating }] = useCreatePricingOverrideMutation();
 	const [updateOverride, { isLoading: isPatching }] = useUpdatePricingOverrideMutation();
 
-	const [form, setForm] = useState<FormState>(defaultFormState);
+	const {
+		register,
+		handleSubmit,
+		setValue,
+		watch,
+		reset,
+		getValues,
+		formState: { errors },
+	} = useForm<FormState>({ defaultValues: defaultFormState });
+
 	const [jsonPatch, setJSONPatch] = useState("");
 	const [jsonError, setJSONError] = useState<string>();
+	const [inlineErrors, setInlineErrors] = useState<Partial<Record<"virtualKeyID" | "pattern" | "requestTypes" | "pricingValues", string>>>({});
 	const jsonEditingRef = useRef(false);
 	const prevOpenRef = useRef(false);
 	const [requestTypePopoverOpen, setRequestTypePopoverOpen] = useState(false);
-	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
 	const isSaving = isCreating || isPatching;
 	const providers = useMemo<ModelProvider[]>(() => (providersError ? [] : (providersData ?? [])), [providersData, providersError]);
 	const virtualKeys = useMemo(() => (virtualKeysError ? [] : (virtualKeysData?.virtual_keys ?? [])), [virtualKeysData, virtualKeysError]);
+
+	const scopeRoot = watch("scopeRoot");
+	const providerID = watch("providerID");
+	const providerKeyID = watch("providerKeyID");
+	const virtualKeyID = watch("virtualKeyID");
+	const matchType = watch("matchType");
+	const requestTypes = watch("requestTypes");
+	const pricingValues = watch("pricingValues");
+
+	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
 	const providerKeyOptions = useMemo(
 		() =>
@@ -486,8 +506,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 		[allKeysData],
 	);
 	const providerScopedKeyOptions = useMemo(
-		() => providerKeyOptions.filter((key) => key.providerName === form.providerID),
-		[providerKeyOptions, form.providerID],
+		() => providerKeyOptions.filter((key) => key.providerName === providerID),
+		[providerKeyOptions, providerID],
 	);
 
 	// Hydrate the form only when the sheet transitions from closed → open.
@@ -499,6 +519,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 		jsonEditingRef.current = false;
 		setJSONError(undefined);
+		setInlineErrors({});
 		if (editingOverride) {
 			const state = toFormState(editingOverride);
 			// For provider_key scopes, provider_id is not stored in the DB (it's implicit from
@@ -508,11 +529,11 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 				const match = providerKeyOptions.find((k) => k.id === state.providerKeyID);
 				if (match) state.providerID = match.providerName;
 			}
-			setForm(state);
+			reset(state);
 			return;
 		}
 		if (shouldLockScope && scopeLock) {
-			const scopedForm: FormState = {
+			reset({
 				...defaultFormState,
 				virtualKeyID: scopeLock.virtualKeyID ?? "",
 				providerID: scopeLock.providerID ?? "",
@@ -523,99 +544,101 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 					scopeLock.scopeKind === "virtual_key_provider_key"
 						? "virtual_key"
 						: "global",
-			};
-			setForm(scopedForm);
+			});
 			return;
 		}
-		setForm(defaultFormState);
-	}, [open, editingOverride, scopeLock, shouldLockScope, providerKeyOptions]);
+		reset(defaultFormState);
+	}, [open, editingOverride, scopeLock, shouldLockScope, providerKeyOptions, reset]);
 
 	// When providerKeyOptions loads after the sheet is already open in edit mode,
 	// backfill the derived providerID without resetting the rest of the form.
 	useEffect(() => {
 		if (!open || !editingOverride) return;
-		setForm((prev) => {
-			if (prev.providerID || !prev.providerKeyID) return prev;
-			const match = providerKeyOptions.find((k) => k.id === prev.providerKeyID);
-			if (!match) return prev;
-			return { ...prev, providerID: match.providerName };
-		});
-	}, [providerKeyOptions, open, editingOverride]);
+		const currentProviderID = getValues("providerID");
+		const currentProviderKeyID = getValues("providerKeyID");
+		if (currentProviderID || !currentProviderKeyID) return;
+		const match = providerKeyOptions.find((k) => k.id === currentProviderKeyID);
+		if (!match) return;
+		setValue("providerID", match.providerName);
+	}, [providerKeyOptions, open, editingOverride, getValues, setValue]);
 
 	const resolvedScopeKind = useMemo(() => {
 		if (shouldLockScope && scopeLock?.scopeKind) return scopeLock.scopeKind;
-		return deriveScopeKind(form);
-	}, [scopeLock, shouldLockScope, form]);
+		return deriveScopeKind({ scopeRoot, providerID, providerKeyID } as FormState);
+	}, [scopeLock, shouldLockScope, scopeRoot, providerID, providerKeyID]);
 
 	const resolvedVirtualKeyID = useMemo(() => {
 		if (shouldLockScope) return scopeLock?.virtualKeyID;
-		return form.scopeRoot === "virtual_key" ? form.virtualKeyID || undefined : undefined;
-	}, [scopeLock, shouldLockScope, form.scopeRoot, form.virtualKeyID]);
+		return scopeRoot === "virtual_key" ? virtualKeyID || undefined : undefined;
+	}, [scopeLock, shouldLockScope, scopeRoot, virtualKeyID]);
 
 	const resolvedProviderID = useMemo(() => {
 		if (shouldLockScope) return scopeLock?.providerID;
-		return form.providerID || undefined;
-	}, [scopeLock, shouldLockScope, form.providerID]);
+		return providerID || undefined;
+	}, [scopeLock, shouldLockScope, providerID]);
 
 	const resolvedProviderKeyID = useMemo(() => {
 		if (shouldLockScope) return scopeLock?.providerKeyID;
-		return form.providerKeyID || undefined;
-	}, [scopeLock, shouldLockScope, form.providerKeyID]);
+		return providerKeyID || undefined;
+	}, [scopeLock, shouldLockScope, providerKeyID]);
 
 	const pricingFieldErrors = useMemo<FieldErrors>(() => {
-		const errors: FieldErrors = {};
+		const errs: FieldErrors = {};
 		for (const key of patchKeys) {
-			const raw = form.pricingValues[key];
+			const raw = pricingValues[key];
 			if (!raw || raw.trim() === "") continue;
 			const parsed = Number(raw);
-			if (!Number.isFinite(parsed)) errors[key] = "Must be a number";
-			else if (parsed < 0) errors[key] = "Must be >= 0";
+			if (!Number.isFinite(parsed)) errs[key] = "Must be a number";
+			else if (parsed < 0) errs[key] = "Must be >= 0";
 		}
-		return errors;
-	}, [form.pricingValues]);
+		return errs;
+	}, [pricingValues]);
 
 	useEffect(() => {
 		if (!jsonEditingRef.current) {
-			const { patch } = buildPatchFromForm(form);
+			const { patch } = buildPatchFromForm(getValues());
 			const json = Object.keys(patch).length > 0 ? JSON.stringify(patch, null, 2) : "";
 			setJSONPatch(json);
 			setJSONError(undefined);
 		}
-	}, [form]);
+	}, [pricingValues, getValues]);
 
-	const handleJSONChange = useCallback((value: string) => {
-		jsonEditingRef.current = true;
-		setJSONPatch(value);
-		const trimmed = value.trim();
-		if (!trimmed) {
-			setJSONError(undefined);
-			setForm((prev) => ({ ...prev, pricingValues: {} }));
-			return;
-		}
-		try {
-			const parsed = JSON.parse(trimmed);
-			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				setJSONError("Patch must be a JSON object");
+	const handleJSONChange = useCallback(
+		(value: string) => {
+			jsonEditingRef.current = true;
+			setJSONPatch(value);
+			const trimmed = value.trim();
+			if (!trimmed) {
+				setJSONError(undefined);
+				setValue("pricingValues", {});
 				return;
 			}
-			const pricingValues: Partial<Record<PricingFieldKey, string>> = {};
-			for (const [key, val] of Object.entries(parsed)) {
-				if (!patchKeys.includes(key as PricingFieldKey)) {
-					setJSONError(`Unknown field: ${key}`);
+			try {
+				const parsed = JSON.parse(trimmed);
+				if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+					setJSONError("Patch must be a JSON object");
 					return;
 				}
-				if (typeof val !== "number" || Number.isNaN(val) || val < 0) {
-					setJSONError(`${key} must be a non-negative number`);
-					return;
+				const newPricingValues: Partial<Record<PricingFieldKey, string>> = {};
+				for (const [key, val] of Object.entries(parsed)) {
+					if (!patchKeys.includes(key as PricingFieldKey)) {
+						setJSONError(`Unknown field: ${key}`);
+						return;
+					}
+					if (typeof val !== "number" || Number.isNaN(val) || val < 0) {
+						setJSONError(`${key} must be a non-negative number`);
+						return;
+					}
+					newPricingValues[key as PricingFieldKey] = String(val);
 				}
-				pricingValues[key as PricingFieldKey] = String(val);
+				setJSONError(undefined);
+				setValue("pricingValues", newPricingValues);
+			} catch {
+				setJSONError("Invalid JSON");
 			}
-			setJSONError(undefined);
-			setForm((prev) => ({ ...prev, pricingValues }));
-		} catch {
-			setJSONError("Invalid JSON");
-		}
-	}, []);
+		},
+		[setValue],
+	);
 
 	const handleFieldChange = useCallback(() => {
 		jsonEditingRef.current = false;
@@ -627,69 +650,45 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	};
 
 	const toggleRequestType = (requestType: RequestType) => {
-		setForm((prev) => ({
-			...prev,
-			requestTypes: prev.requestTypes.includes(requestType)
-				? prev.requestTypes.filter((item) => item !== requestType)
-				: [...prev.requestTypes, requestType],
-		}));
+		const current = getValues("requestTypes");
+		const next = current.includes(requestType) ? current.filter((item) => item !== requestType) : [...current, requestType];
+		setValue("requestTypes", next);
+		if (next.length > 0) setInlineErrors((prev) => ({ ...prev, requestTypes: undefined }));
 	};
 
-	const handleSave = async () => {
-		if (!form.name.trim()) {
-			toast.error("Name is required");
-			return;
-		}
+	const onSubmit = async (data: FormState) => {
+		const newErrors: Partial<Record<"virtualKeyID" | "pattern" | "requestTypes" | "pricingValues", string>> = {};
 
 		if (
+			!shouldLockScope &&
 			(resolvedScopeKind === "virtual_key" ||
 				resolvedScopeKind === "virtual_key_provider" ||
 				resolvedScopeKind === "virtual_key_provider_key") &&
 			!resolvedVirtualKeyID
 		) {
-			toast.error("Virtual key is required");
-			return;
+			newErrors.virtualKeyID = "Virtual key is required";
 		}
-		if ((resolvedScopeKind === "provider" || resolvedScopeKind === "virtual_key_provider") && !resolvedProviderID) {
-			toast.error("Provider is required");
-			return;
+
+		const pError = patternError(data.matchType, data.pattern);
+		if (pError) newErrors.pattern = pError;
+
+		if (data.requestTypes.length === 0) newErrors.requestTypes = "At least one request type must be selected";
+
+		if (Object.keys(pricingFieldErrors).length > 0) {
+			newErrors.pricingValues = "Fix the pricing field errors above";
+		} else {
+			const { patch } = buildPatchFromForm(data);
+			if (Object.keys(patch).length === 0) newErrors.pricingValues = "At least one pricing field must be overridden";
 		}
-		if (resolvedScopeKind === "provider_key" && !resolvedProviderKeyID) {
-			toast.error("Provider key is required");
-			return;
-		}
-		if (resolvedScopeKind === "virtual_key_provider_key" && (!resolvedProviderID || !resolvedProviderKeyID)) {
-			toast.error("Provider and provider key are required");
+
+		if (Object.keys(newErrors).length > 0 || jsonError) {
+			setInlineErrors(newErrors);
 			return;
 		}
 
-		const pError = patternError(form.matchType, form.pattern);
-		if (pError) {
-			toast.error(pError);
-			return;
-		}
+		setInlineErrors({});
 
-		if (form.requestTypes.length === 0) {
-			toast.error("At least one request type must be selected");
-			return;
-		}
-
-		if (jsonError) {
-			toast.error("Fix the JSON error before saving");
-			return;
-		}
-
-		const { patch, errors: pricingErrors } = buildPatchFromForm(form);
-		const firstPricingError = Object.values(pricingErrors)[0];
-		if (firstPricingError) {
-			toast.error(firstPricingError);
-			return;
-		}
-		if (Object.keys(patch).length === 0) {
-			toast.error("At least one pricing field must be overridden");
-			return;
-		}
-
+		const { patch } = buildPatchFromForm(data);
 		let scopedVirtualKeyID: string | undefined;
 		let scopedProviderID: string | undefined;
 		let scopedProviderKeyID: string | undefined;
@@ -718,14 +717,14 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 		}
 
 		const requestPayload: CreatePricingOverrideRequest = {
-			name: form.name.trim(),
+			name: data.name.trim(),
 			scope_kind: resolvedScopeKind,
 			virtual_key_id: scopedVirtualKeyID,
 			provider_id: scopedProviderID,
 			provider_key_id: scopedProviderKeyID,
-			match_type: form.matchType,
-			pattern: form.pattern.trim(),
-			request_types: form.requestTypes.length > 0 ? form.requestTypes : [],
+			match_type: data.matchType,
+			pattern: data.pattern.trim(),
+			request_types: data.requestTypes,
 			patch,
 		};
 
@@ -746,311 +745,331 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 	return (
 		<Sheet open={open} onOpenChange={(o) => (o ? onOpenChange(true) : handleCloseDrawer())}>
-			<SheetContent side="right" className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-6 sm:max-w-2xl">
-				<SheetHeader className="flex flex-col items-start px-3 pt-8">
-					<SheetTitle>{editingOverride ? "Edit Pricing Override" : "Create Pricing Override"}</SheetTitle>
+			<SheetContent side="right" className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-0 pt-4 sm:max-w-2xl">
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<SheetTitle className="">{editingOverride ? "Edit Pricing Override" : "Create Pricing Override"}</SheetTitle>
 				</SheetHeader>
 
-				<div className="custom-scrollbar flex-1 space-y-6 overflow-y-auto px-3 pb-4">
-					<div className="space-y-4">
-						<div className="space-y-2">
-							<Label htmlFor="pricing-override-name-input">
-								Name <span className="text-red-500">*</span>
-							</Label>
-							<Input
-								id="pricing-override-name-input"
-								data-testid="pricing-override-name-input"
-								placeholder="e.g., GPT-4 Negotiated Rate"
-								value={form.name}
-								onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-							/>
-						</div>
-
-						{shouldLockScope && scopeLock ? (
+				<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+					<div className="flex-1 space-y-6 overflow-y-auto px-8 pb-4">
+						<div className="space-y-4">
 							<div className="space-y-2">
-								<Label htmlFor="pricing-override-scope-lock-input">Scope</Label>
+								<Label htmlFor="pricing-override-name-input">
+									Name <span className="text-red-500">*</span>
+								</Label>
 								<Input
-									id="pricing-override-scope-lock-input"
-									data-testid="pricing-override-scope-lock-input"
-									value={scopeLock.label ?? scopeLock.scopeKind}
-									readOnly
+									id="pricing-override-name-input"
+									data-testid="pricing-override-name-input"
+									placeholder="e.g., GPT-4 Negotiated Rate"
+									{...register("name", { required: "Name is required" })}
 								/>
+								{errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
 							</div>
-						) : (
-							<>
+
+							{shouldLockScope && scopeLock ? (
 								<div className="space-y-2">
-									<Label htmlFor="pricing-override-scope-root-select">Scope root</Label>
-									<Select
-										value={form.scopeRoot}
-										onValueChange={(value: ScopeRoot) => setForm((prev) => ({ ...prev, scopeRoot: value, virtualKeyID: "" }))}
-									>
-										<SelectTrigger
-											id="pricing-override-scope-root-select"
-											data-testid="pricing-override-scope-root-select"
-											className="w-full"
-										>
-											<SelectValue />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="global">Global</SelectItem>
-											<SelectItem value="virtual_key">Virtual key</SelectItem>
-										</SelectContent>
-									</Select>
+									<Label htmlFor="pricing-override-scope-lock-input">Scope</Label>
+									<Input
+										id="pricing-override-scope-lock-input"
+										data-testid="pricing-override-scope-lock-input"
+										value={scopeLock.label ?? scopeLock.scopeKind}
+										readOnly
+									/>
 								</div>
-
-								{form.scopeRoot === "virtual_key" && (
+							) : (
+								<>
 									<div className="space-y-2">
-										<Label htmlFor="pricing-override-virtual-key-select">
-											Virtual key <span className="text-red-500">*</span>
-										</Label>
+										<Label htmlFor="pricing-override-scope-root-select">Scope root</Label>
 										<Select
-											value={form.virtualKeyID || "__none__"}
-											onValueChange={(value) =>
-												setForm((prev) => ({ ...prev, virtualKeyID: value === "__none__" ? "" : value, providerID: "", providerKeyID: "" }))
-											}
+											value={scopeRoot}
+											onValueChange={(value: ScopeRoot) => {
+												setValue("scopeRoot", value);
+												setValue("virtualKeyID", "");
+												setInlineErrors((prev) => ({ ...prev, virtualKeyID: undefined }));
+											}}
 										>
 											<SelectTrigger
-												id="pricing-override-virtual-key-select"
-												data-testid="pricing-override-virtual-key-select"
+												id="pricing-override-scope-root-select"
+												data-testid="pricing-override-scope-root-select"
 												className="w-full"
-												disabled={isVirtualKeysLoading || !!virtualKeysError}
 											>
-												<SelectValue placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"} />
+												<SelectValue />
 											</SelectTrigger>
 											<SelectContent>
-												<SelectItem value="__none__">Select virtual key</SelectItem>
-												{virtualKeys.map((vk) => (
-													<SelectItem key={vk.id} value={vk.id}>
-														{vk.name}
-													</SelectItem>
-												))}
+												<SelectItem value="global">Global</SelectItem>
+												<SelectItem value="virtual_key">Virtual key</SelectItem>
 											</SelectContent>
 										</Select>
-										{virtualKeysError ? (
-											<p className="text-destructive mt-1 text-xs">Failed to load virtual keys: {getErrorMessage(virtualKeysError)}</p>
-										) : null}
-									</div>
-								)}
-
-								<div className="grid grid-cols-2 gap-2">
-									<div className="space-y-2">
-										<Label htmlFor="pricing-override-provider-select">Provider</Label>
-										<Select
-											value={form.providerID || "__none__"}
-											onValueChange={(value) =>
-												setForm((prev) => ({ ...prev, providerID: value === "__none__" ? "" : value, providerKeyID: "" }))
-											}
-										>
-											<SelectTrigger
-												id="pricing-override-provider-select"
-												data-testid="pricing-override-provider-select"
-												className="w-full"
-												disabled={isProvidersLoading || !!providersError}
-											>
-												{isProvidersLoading ? (
-													<span className="text-muted-foreground">Loading...</span>
-												) : form.providerID ? (
-													<div className="flex items-center gap-1.5">
-														<RenderProviderIcon provider={form.providerID as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
-														<span>{getProviderLabel(form.providerID)}</span>
-													</div>
-												) : (
-													<span className="text-muted-foreground">All providers</span>
-												)}
-											</SelectTrigger>
-											<SelectContent>
-												<SelectItem value="__none__">All providers</SelectItem>
-												{providers.map((provider) => (
-													<SelectItem key={provider.name} value={provider.name}>
-														<div className="flex items-center gap-1.5">
-															<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
-															<span>{getProviderLabel(provider.name)}</span>
-														</div>
-													</SelectItem>
-												))}
-											</SelectContent>
-										</Select>
-										{providersError ? (
-											<p className="text-destructive mt-1 text-xs">Failed to load providers: {getErrorMessage(providersError)}</p>
-										) : null}
 									</div>
 
-									{form.providerID ? (
+									{scopeRoot === "virtual_key" && (
 										<div className="space-y-2">
-											<Label htmlFor="pricing-override-provider-key-select">Provider key</Label>
+											<Label htmlFor="pricing-override-virtual-key-select">
+												Virtual key <span className="text-red-500">*</span>
+											</Label>
 											<Select
-												value={form.providerKeyID || "__none__"}
-												onValueChange={(value) => setForm((prev) => ({ ...prev, providerKeyID: value === "__none__" ? "" : value }))}
+												value={virtualKeyID || "__none__"}
+												onValueChange={(value) => {
+													setValue("virtualKeyID", value === "__none__" ? "" : value);
+													setValue("providerID", "");
+													setValue("providerKeyID", "");
+													setInlineErrors((prev) => ({ ...prev, virtualKeyID: undefined }));
+												}}
 											>
 												<SelectTrigger
-													id="pricing-override-provider-key-select"
-													data-testid="pricing-override-provider-key-select"
+													id="pricing-override-virtual-key-select"
+													data-testid="pricing-override-virtual-key-select"
 													className="w-full"
+													disabled={isVirtualKeysLoading || !!virtualKeysError}
 												>
-													<SelectValue placeholder="All provider keys" />
+													<SelectValue placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"} />
 												</SelectTrigger>
 												<SelectContent>
-													<SelectItem value="__none__">All provider keys</SelectItem>
-													{providerScopedKeyOptions.map((option) => (
-														<SelectItem key={option.id} value={option.id}>
-															{option.label}
+													<SelectItem value="__none__">Select virtual key</SelectItem>
+													{virtualKeys.map((vk) => (
+														<SelectItem key={vk.id} value={vk.id}>
+															{vk.name}
 														</SelectItem>
 													))}
 												</SelectContent>
 											</Select>
+											{virtualKeysError ? (
+												<p className="text-destructive mt-1 text-xs">Failed to load virtual keys: {getErrorMessage(virtualKeysError)}</p>
+											) : inlineErrors.virtualKeyID ? (
+												<p className="text-destructive text-xs">{inlineErrors.virtualKeyID}</p>
+											) : null}
 										</div>
-									) : (
-										<div />
 									)}
-								</div>
-							</>
-						)}
-					</div>
 
-					<div className="space-y-2">
-						<div className="grid grid-cols-[1fr_2fr] gap-2">
-							<div className="space-y-2">
-								<Label htmlFor="pricing-override-match-type-select">Match type</Label>
-								<Select
-									value={form.matchType}
-									onValueChange={(value: PricingOverrideMatchType) => setForm((prev) => ({ ...prev, matchType: value }))}
-								>
-									<SelectTrigger
-										id="pricing-override-match-type-select"
-										data-testid="pricing-override-match-type-select"
-										className="w-full"
+									<div className="grid grid-cols-2 gap-2">
+										<div className="space-y-2">
+											<Label htmlFor="pricing-override-provider-select">Provider</Label>
+											<Select
+												value={providerID || "__none__"}
+												onValueChange={(value) => {
+													setValue("providerID", value === "__none__" ? "" : value);
+													setValue("providerKeyID", "");
+												}}
+											>
+												<SelectTrigger
+													id="pricing-override-provider-select"
+													data-testid="pricing-override-provider-select"
+													className="w-full"
+													disabled={isProvidersLoading || !!providersError}
+												>
+													{isProvidersLoading ? (
+														<span className="text-muted-foreground">Loading...</span>
+													) : providerID ? (
+														<div className="flex items-center gap-1.5">
+															<RenderProviderIcon provider={providerID as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
+															<span>{getProviderLabel(providerID)}</span>
+														</div>
+													) : (
+														<span className="text-muted-foreground">All providers</span>
+													)}
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="__none__">All providers</SelectItem>
+													{providers.map((provider) => (
+														<SelectItem key={provider.name} value={provider.name}>
+															<div className="flex items-center gap-1.5">
+																<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
+																<span>{getProviderLabel(provider.name)}</span>
+															</div>
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+											{providersError ? (
+												<p className="text-destructive mt-1 text-xs">Failed to load providers: {getErrorMessage(providersError)}</p>
+											) : null}
+										</div>
+
+										{providerID ? (
+											<div className="space-y-2">
+												<Label htmlFor="pricing-override-provider-key-select">Provider key</Label>
+												<Select
+													value={providerKeyID || "__none__"}
+													onValueChange={(value) => setValue("providerKeyID", value === "__none__" ? "" : value)}
+												>
+													<SelectTrigger
+														id="pricing-override-provider-key-select"
+														data-testid="pricing-override-provider-key-select"
+														className="w-full"
+													>
+														<SelectValue placeholder="All provider keys" />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="__none__">All provider keys</SelectItem>
+														{providerScopedKeyOptions.map((option) => (
+															<SelectItem key={option.id} value={option.id}>
+																{option.label}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+											</div>
+										) : (
+											<div />
+										)}
+									</div>
+								</>
+							)}
+						</div>
+
+						<div className="space-y-2">
+							<div className="grid grid-cols-[1fr_2fr] gap-2">
+								<div className="space-y-2">
+									<Label htmlFor="pricing-override-match-type-select">Match type</Label>
+									<Select
+										value={matchType}
+										onValueChange={(value: PricingOverrideMatchType) => {
+											setValue("matchType", value);
+											setInlineErrors((prev) => ({ ...prev, pattern: undefined }));
+										}}
 									>
-										<SelectValue placeholder="Select match type" />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value="exact">Exact</SelectItem>
-										<SelectItem value="wildcard">Wildcard</SelectItem>
-									</SelectContent>
-								</Select>
+										<SelectTrigger
+											id="pricing-override-match-type-select"
+											data-testid="pricing-override-match-type-select"
+											className="w-full"
+										>
+											<SelectValue placeholder="Select match type" />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="exact">Exact</SelectItem>
+											<SelectItem value="wildcard">Wildcard</SelectItem>
+										</SelectContent>
+									</Select>
+								</div>
+								<div className="space-y-2">
+									<Label htmlFor="pricing-override-pattern-input">
+										Pattern <span className="text-red-500">*</span>
+									</Label>
+									<Input
+										id="pricing-override-pattern-input"
+										data-testid="pricing-override-pattern-input"
+										placeholder={matchType === "exact" ? "e.g., gpt-4o" : "e.g., gpt-4*"}
+										{...register("pattern", {
+											onChange: () => setInlineErrors((prev) => ({ ...prev, pattern: undefined })),
+										})}
+									/>
+									{inlineErrors.pattern && <p className="text-destructive text-xs">{inlineErrors.pattern}</p>}
+								</div>
 							</div>
-							<div className="space-y-2">
-								<Label htmlFor="pricing-override-pattern-input">
-									Pattern <span className="text-red-500">*</span>
-								</Label>
-								<Input
-									id="pricing-override-pattern-input"
-									data-testid="pricing-override-pattern-input"
-									value={form.pattern}
-									onChange={(e) => setForm((prev) => ({ ...prev, pattern: e.target.value }))}
-									placeholder={form.matchType === "exact" ? "e.g., gpt-4o" : "e.g., gpt-4*"}
+						</div>
+
+						<div className="space-y-2">
+							<Label htmlFor="pricing-override-request-types-btn">
+								Request types <span className="text-red-500">*</span>
+							</Label>
+							<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
+								<PopoverTrigger asChild>
+									<Button
+										id="pricing-override-request-types-btn"
+										data-testid="pricing-override-request-types-btn"
+										type="button"
+										variant="outline"
+										className="h-10 w-full justify-between"
+									>
+										<span className="truncate text-left">
+											{requestTypes.length > 0 ? (
+												requestTypes.map((rt) => RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt).join(", ")
+											) : (
+												<span className="text-muted-foreground">Select request types...</span>
+											)}
+										</span>
+										<ChevronDown className="h-4 w-4 shrink-0" />
+									</Button>
+								</PopoverTrigger>
+								<PopoverContent align="start" className="w-[320px] p-2" onWheel={(e) => e.stopPropagation()}>
+									<div className="max-h-72 space-y-1 overflow-y-auto" onWheel={(e) => e.stopPropagation()}>
+										{REQUEST_TYPE_GROUPS.map((group) => (
+											<div key={group.label}>
+												<div className="text-muted-foreground px-2 py-1 text-xs font-medium">{group.label}</div>
+												{group.types.map((requestType) => {
+													const checked = requestTypes.includes(requestType);
+													return (
+														<label
+															key={requestType}
+															className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm"
+														>
+															<Checkbox
+																data-testid={`pricing-override-request-type-checkbox-${requestType}`}
+																checked={checked}
+																onCheckedChange={() => toggleRequestType(requestType)}
+															/>
+															<span>{RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] ?? requestType}</span>
+														</label>
+													);
+												})}
+											</div>
+										))}
+									</div>
+									<div className="mt-2 flex justify-end">
+										<Button
+											data-testid="pricing-override-request-types-clear-btn"
+											type="button"
+											size="sm"
+											variant="ghost"
+											onClick={() => setValue("requestTypes", [])}
+										>
+											Clear
+										</Button>
+									</div>
+								</PopoverContent>
+							</Popover>
+							{inlineErrors.requestTypes && <p className="text-destructive text-xs">{inlineErrors.requestTypes}</p>}
+						</div>
+
+						<div className="space-y-2">
+							<Label>
+								Pricing fields <span className="text-red-500">*</span>{" "}
+								<span className="text-muted-foreground text-xs font-normal">(USD per unit)</span>
+							</Label>
+							<PricingFieldSelector
+								key={open ? (editingOverride?.id ?? "new") : "closed"}
+								values={pricingValues}
+								errors={pricingFieldErrors}
+								selectedRequestTypes={requestTypes}
+								onChange={(key, value) => {
+									handleFieldChange();
+									setValue("pricingValues", { ...pricingValues, [key]: value });
+									setInlineErrors((prev) => ({ ...prev, pricingValues: undefined }));
+								}}
+								onFieldInteraction={handleFieldChange}
+							/>
+							{inlineErrors.pricingValues && <p className="text-destructive text-xs">{inlineErrors.pricingValues}</p>}
+						</div>
+
+						<div className="space-y-2">
+							<Label className="text-muted-foreground text-xs">JSON</Label>
+							<div className={cn("bg-muted/50 overflow-hidden rounded-md border", jsonError && "border-destructive")}>
+								<CodeEditor
+									lang="json"
+									code={jsonPatch}
+									onChange={handleJSONChange}
+									minHeight={40}
+									maxHeight={200}
+									autoResize
+									shouldAdjustInitialHeight
+									options={{ lineNumbers: "off", scrollBeyondLastLine: false }}
 								/>
 							</div>
+							{jsonError && <p className="text-destructive text-xs">{jsonError}</p>}
 						</div>
 					</div>
 
-					<div className="space-y-2">
-						<Label htmlFor="pricing-override-request-types-btn">
-							Request types <span className="text-red-500">*</span>
-						</Label>
-						<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
-							<PopoverTrigger asChild>
-								<Button
-									id="pricing-override-request-types-btn"
-									data-testid="pricing-override-request-types-btn"
-									type="button"
-									variant="outline"
-									className="h-10 w-full justify-between"
-								>
-									<span className="truncate text-left">
-										{form.requestTypes.length > 0 ? (
-											form.requestTypes.map((rt) => RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt).join(", ")
-										) : (
-											<span className="text-muted-foreground">Select request types...</span>
-										)}
-									</span>
-									<ChevronDown className="h-4 w-4 shrink-0" />
-								</Button>
-							</PopoverTrigger>
-							<PopoverContent align="start" className="w-[320px] p-2" onWheel={(e) => e.stopPropagation()}>
-								<div className="max-h-72 space-y-1 overflow-y-auto" onWheel={(e) => e.stopPropagation()}>
-									{REQUEST_TYPE_GROUPS.map((group) => (
-										<div key={group.label}>
-											<div className="text-muted-foreground px-2 py-1 text-xs font-medium">{group.label}</div>
-											{group.types.map((requestType) => {
-												const checked = form.requestTypes.includes(requestType);
-												return (
-													<label
-														key={requestType}
-														className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm"
-													>
-														<Checkbox
-															data-testid={`pricing-override-request-type-checkbox-${requestType}`}
-															checked={checked}
-															onCheckedChange={() => toggleRequestType(requestType)}
-														/>
-														<span>{RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] ?? requestType}</span>
-													</label>
-												);
-											})}
-										</div>
-									))}
-								</div>
-								<div className="mt-2 flex justify-end">
-									<Button
-										data-testid="pricing-override-request-types-clear-btn"
-										type="button"
-										size="sm"
-										variant="ghost"
-										onClick={() => setForm((prev) => ({ ...prev, requestTypes: [] }))}
-									>
-										Clear
-									</Button>
-								</div>
-							</PopoverContent>
-						</Popover>
+					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-7 py-4">
+						<Button data-testid="pricing-override-cancel-btn" type="button" variant="outline" onClick={handleCloseDrawer} disabled={isSaving}>
+							<X className="h-4 w-4" />
+							Cancel
+						</Button>
+						<Button data-testid="pricing-override-save-btn" type="submit" disabled={isSaving}>
+							<Save className="h-4 w-4" />
+							{editingOverride ? "Update Override" : "Save Override"}
+						</Button>
 					</div>
-
-					<div className="space-y-2">
-						<Label>
-							Pricing fields <span className="text-red-500">*</span>{" "}
-							<span className="text-muted-foreground text-xs font-normal">(USD per unit)</span>
-						</Label>
-						<PricingFieldSelector
-							key={open ? (editingOverride?.id ?? "new") : "closed"}
-							values={form.pricingValues}
-							errors={pricingFieldErrors}
-							selectedRequestTypes={form.requestTypes}
-							onChange={(key, value) => {
-								handleFieldChange();
-								setForm((prev) => ({ ...prev, pricingValues: { ...prev.pricingValues, [key]: value } }));
-							}}
-							onFieldInteraction={handleFieldChange}
-						/>
-					</div>
-
-					<div className="space-y-2">
-						<Label className="text-muted-foreground text-xs">JSON</Label>
-						<div className={cn("bg-muted/50 overflow-hidden rounded-md border", jsonError && "border-destructive")}>
-							<CodeEditor
-								lang="json"
-								code={jsonPatch}
-								onChange={handleJSONChange}
-								minHeight={40}
-								maxHeight={200}
-								autoResize
-								shouldAdjustInitialHeight
-								options={{ lineNumbers: "off", scrollBeyondLastLine: false }}
-							/>
-						</div>
-						{jsonError && <p className="text-destructive text-xs">{jsonError}</p>}
-					</div>
-				</div>
-
-				<div className="flex justify-end gap-3 px-3 pt-4">
-					<Button data-testid="pricing-override-cancel-btn" type="button" variant="outline" onClick={handleCloseDrawer} disabled={isSaving}>
-						<X className="h-4 w-4" />
-						Cancel
-					</Button>
-					<Button data-testid="pricing-override-save-btn" type="button" onClick={handleSave} disabled={isSaving}>
-						<Save className="h-4 w-4" />
-						{editingOverride ? "Update Override" : "Save Override"}
-					</Button>
-				</div>
+				</form>
 			</SheetContent>
 		</Sheet>
 	);
