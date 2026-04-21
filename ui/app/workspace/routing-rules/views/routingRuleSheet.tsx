@@ -564,7 +564,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													provider={fbProvider || undefined}
 													value={fbModel}
 													onChange={handleModelChange}
-													placeholder="Select model..."
+													placeholder="Incoming (optional)"
 													isSingleSelect
 													disabled={!fbProvider}
 													className="!h-9 !min-h-9 w-full"

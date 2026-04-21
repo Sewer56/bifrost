@@ -939,9 +939,18 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		// Append routing-rule to routing engines used
 		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
 
-		// Add fallbacks if present
+		// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
 		if len(decision.Fallbacks) > 0 {
-			body["fallbacks"] = decision.Fallbacks
+			resolvedFallbacks := make([]string, 0, len(decision.Fallbacks))
+			for _, fb := range decision.Fallbacks {
+				fbProvider, fbModel := schemas.ParseModelString(fb, "")
+				if fbProvider != "" && fbModel == "" && model != "" {
+					resolvedFallbacks = append(resolvedFallbacks, string(fbProvider)+"/"+model)
+				} else {
+					resolvedFallbacks = append(resolvedFallbacks, fb)
+				}
+			}
+			body["fallbacks"] = resolvedFallbacks
 		}
 
 		// Pin specific API key by ID if the routing rule specifies one
