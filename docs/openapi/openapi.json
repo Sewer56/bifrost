@@ -47039,7 +47039,8 @@
           "pages": {
             "type": "array",
             "items": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0
             },
             "description": "Specific page indices to process (0-based)"
           },
